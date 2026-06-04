@@ -1,0 +1,22 @@
+# 输出目录
+feishu_doc/
+feishu_output/
+feishu_test/
+feishu_test_pdf/
+
+# 浏览器数据（含登录态）
+feishu_profile/
+feishu_browser_data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
