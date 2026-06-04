@@ -104,6 +104,7 @@ def main_menu():
   [2] 设置导出目录
   [3] 导出格式设置
   [4] ▶ 开始爬取
+  [5] 清除登录状态 (切换账号)
   [0] 退出
 """)
 
@@ -1196,6 +1197,23 @@ async def export_pdf(md_files, output_path, title="飞书文档"):
 
     print(f"  PDF 已导出: {output_path} ({output_path.stat().st_size // 1024} KB)")
 
+def clear_login():
+    """清除浏览器登录状态，用于切换飞书账号"""
+    import shutil
+    profile = Path("./feishu_profile")
+    if profile.exists():
+        size_mb = sum(f.stat().st_size for f in profile.rglob('*') if f.is_file()) / 1024 / 1024
+        print(f"\n  当前登录数据: {size_mb:.1f} MB")
+        c = input("  确认清除登录状态？清除后下次需要重新扫码 [y/N]: ").strip().lower()
+        if c == 'y':
+            shutil.rmtree(profile)
+            print("  已清除。下次爬取时将弹出登录页面。")
+        else:
+            print("  已取消。")
+    else:
+        print("\n  没有登录数据，无需清除。")
+    input("  按回车返回菜单...")
+
 # ========== 菜单入口 ==========
 def run_menu():
     """主菜单循环"""
@@ -1221,10 +1239,12 @@ def run_menu():
             sub_menu_format()
         elif c == '4':
             if not config.url or 'feishu.cn' not in config.url:
-                print("\n  ⚠ 请先设置目标URL（选项1）")
+                print("\n  请先设置目标URL（选项1）")
                 input("  按回车继续...")
                 continue
             asyncio.run(do_crawl())
+        elif c == '5':
+            clear_login()
         elif c == '0':
             print("\n  再见！\n")
             break
