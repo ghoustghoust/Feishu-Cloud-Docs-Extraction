@@ -1,3 +1,12 @@
+# 归档的老版本与本地大文件 (不入库)
+_archive_v22/
+.mimosa/
+
+# 新版本地数据 (含登录态/爬取库/输出)
+feishu-harvest/backend/data/
+feishu-harvest/backend/feishu_profile/
+feishu-harvest/backend/server.log
+
 # 输出目录
 feishu_doc/
 feishu_output/
@@ -13,6 +22,9 @@ feishu_doc2/
 __pycache__/
 *.pyc
 *.pyo
+
+# 日志
+*.log
 
 # 系统文件
 .DS_Store

@@ -2,3 +2,6 @@ playwright>=1.40
 beautifulsoup4>=4.12
 lxml>=5.0
 markdown>=3.5
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.5

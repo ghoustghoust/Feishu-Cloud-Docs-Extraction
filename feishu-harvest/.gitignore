@@ -1,0 +1,12 @@
+# 数据与登录态
+data/
+feishu_profile/
+
+# 构建产物
+node_modules/
+dist/
+__pycache__/
+*.pyc
+
+# 本地日志
+*.log
