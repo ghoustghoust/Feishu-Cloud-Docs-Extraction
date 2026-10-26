@@ -1,25 +1,91 @@
-# Feishu Cloud Docs Extraction — 飞书知识库采撷
+# Feishu Harvest — 飞书知识库采撷 v2.0
 
-将你有权访问的飞书知识库/文档导出为本地 **Markdown / PDF**。
+将你有权访问的飞书知识库/文档优雅地导出为本地 **Markdown / PDF**。
+浏览器打开即用的控制台：**多 Tab 并行爬取 · AIMD 自适应节流 · SQLite 断点续爬 · 实时仪表盘**。
 
-> **v2 全新重构版位于 [`feishu-harvest/`](feishu-harvest/)** —— 六层解耦架构、多 Tab 并行、
-> AIMD 自适应节流、SQLite 断点续爬、实时仪表盘。已通过 691 节点 / 5 层深度的知识库实测。
->
-> 旧版 v22 单文件脚本已归档至 `_archive_v22/`（本地保留，不入库）。
+> 深度文档：架构与拓扑 [feishu-harvest/docs/ARCHITECTURE.md](feishu-harvest/docs/ARCHITECTURE.md) ·
+> 效率/风控/稳定性策略与开源方案对照 [feishu-harvest/docs/STRATEGY.md](feishu-harvest/docs/STRATEGY.md)
+
+---
+
+## 界面预览
+
+**主控制台**（任务卡片 + 阶段流 + 统计格 + 实时事件流 + 知识库树）：
+
+![主控制台](feishu-harvest/docs/ui-preview.png)
+
+**运行设置**（16 项全部可视化，均真实接线）：
+
+![运行设置](feishu-harvest/docs/ui-settings.png)
+
+---
+
+## 为什么是它（实测战报：GeekAGI 知识库终极压测）
+
+| 指标 | 结果 |
+|---|---|
+| 节点发现 | **691 个**（老版本同库只能发现 270 个，漏一半以上） |
+| 层级深度 | **5 层全覆盖**（L1:25 / L2:120 / L3:425 / L4:109 / L5:2） |
+| 内容规模 | 716 个 md + 2563 张图片 |
+| 飞书专有格式 | 24+ 多维表格 API 直采（真实表格数据）、文件管理页、附件真实下载、内嵌表格块、iframe/视频 |
+| 断点续爬 | 两次网络中断 + 一次浏览器崩溃，**零数据丢失**，增量补齐全部缺口 |
+| 合并 PDF | 1341 页 **38.9 MB**（439MB 原图经降采样 + JPEG 压缩） |
+
+## 核心功能
+
+| 功能 | 说明 |
+|---|---|
+| 扫码登录 | 首次弹出浏览器扫码，登录态本地持久化，可一键清除切换账号 |
+| 深层级发现 | 虚拟滚动深度展开 + 逐章节 BFS，实测覆盖 5 层（老版本只到 2 层） |
+| 全类型提取 | 文档 / 多维表格(API 直采) / 文件管理页 / 附件节点 / 内嵌表格(base_refer)；不支持类型生成占位说明 |
+| 层级输出 | 目录树与导航树一一对应；每个知识库独立子目录，多库互不污染 |
+| 增量同步 | 已完成节点哈希缓存，二跑只爬新/改页面；中断自动从断点续爬 |
+| 韧性自愈 | Tab 崩溃自动换新页；断网错误页识别为失败待重试（永不写入假内容） |
+| 内容保真 | 代码块自愈 · 导航壳剔除 · 零宽水印清洗 · 飞书页面链接自动转纯文本（本地打开必报错） |
+| 实时仪表盘 | SSE 推送：阶段流 · 进度环 · 速率/ETA · 节点树状态点 · 事件日志 |
+| 合并 PDF | 目录导航 + A4 排版 + 代码高亮；图片自动降采样转 JPEG，体积可控 |
+| 自包含导出 | 可选：base64 内嵌图片副本（单文件可迁移），原件保持轻量 |
 
 ## 快速开始
 
 ```bash
 cd feishu-harvest
-# Windows: 双击 启动.bat   macOS/Linux: ./start.sh
+# Windows: 双击 启动.bat    macOS / Linux: ./start.sh
 ```
 
-详见 **[feishu-harvest/README.md](feishu-harvest/README.md)** 与设计文档
-[docs/ARCHITECTURE.md](feishu-harvest/docs/ARCHITECTURE.md) ·
-[docs/STRATEGY.md](feishu-harvest/docs/STRATEGY.md)。
+脚本自动装依赖 → 启动服务 → 打开控制台 `http://127.0.0.1:19527`。
+
+1. 首次使用在弹出浏览器中**扫码登录**飞书；
+2. 控制台粘贴知识库任意页面链接 → 点「开始采撷」；
+3. 中断后直接重新点击开始，自动增量续爬。
+
+## 16 项可控设置（设置抽屉）
+
+| 分组 | 设置项 |
+|---|---|
+| 并发与节奏 | 并发 Tab 数(1-6) · 基础导航间隔 · 退避上限 · AIMD 自适应开关 |
+| 超时与重试 | 导航超时 · 渲染等待上限 · 提取重试次数 · 图片并发数 |
+| 内容类型 | 无法提取类型策略(占位/跳过) · 多维表格全视图导出 · 视频输出地址 |
+| 导出与输出 | 导出格式(md/pdf) · PDF 图片宽度 · 自包含副本 · 附件下载 · 启动前清空 · 输出目录 |
+
+## 项目结构
+
+```
+feishu-harvest/
+├── docs/                # ARCHITECTURE.md · STRATEGY.md · 界面截图
+├── backend/harvest/     # Python + FastAPI + Playwright
+│   ├── core/            # 节流/熔断纯机制 (AIMD · CSPRNG 抖动 · 令牌桶)
+│   ├── store/           # SQLite WAL 节点状态机 (断点续爬/增量)
+│   ├── transport/       # Playwright 生命周期 + PagePool (Tab 崩溃自愈)
+│   ├── legacy/          # 提取内核 (唯一知道飞书 DOM 的层)
+│   ├── pipeline/        # 发现/提取/写盘/PDF 编排
+│   └── api/             # FastAPI + SSE 薄适配层
+├── frontend/            # React 18 + Vite + Tailwind 仪表盘
+└── 启动.bat / start.sh
+```
 
 ## 免责声明
 
 - 仅抓取当前登录账号**有权查看**的内容，不绕过任何权限控制；
-- 不使用代理池 / IP 轮换 / 指纹伪装，仅采用礼貌爬取（限速 + 退避 + 增量）；
+- 不使用代理池 / IP 轮换 / 指纹伪装 —— 礼貌爬取（限速 + 退避 + 增量）是唯一策略；
 - 仅供个人学习使用，内容版权归原作者；禁止大规模批量爬取或商用传播。

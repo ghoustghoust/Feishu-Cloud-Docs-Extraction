@@ -8,6 +8,8 @@
 
 ![控制台预览](docs/ui-preview.png)
 
+![运行设置](docs/ui-settings.png)
+
 ---
 
 ## 实测战报（终极压测：GeekAGI 知识库）
