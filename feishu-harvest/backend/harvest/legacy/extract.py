@@ -290,6 +290,23 @@ async def extract_page(page, images_dir: Path, render_timeout: float = 25.0,
 
     result = mc.recover_code_blocks(result)
     result = mc.repair_fences(result)
+
+    # 内嵌多维表格是懒加载 iframe: 逐块 scrollIntoView 停留, 强制触发其 records 请求
+    # (网络层监听器在 crawler 侧捕获三元组 → 后续 to_markdown 直采)
+    try:
+        n_embeds = await page.evaluate("""async () => {
+            const blocks = [...document.querySelectorAll('[data-block-type="base_refer"]')];
+            for (const b of blocks.slice(0, 5)) {
+                try { b.scrollIntoView({block: 'center'}); } catch (e) {}
+                await new Promise(r => setTimeout(r, 2500));
+            }
+            return blocks.length;
+        }""")
+        if n_embeds:
+            await asyncio.sleep(2)  # 最后停留, 让尾部 records 请求发出
+    except Exception:
+        pass
+
     extras = await _collect_embedded(page, video_links=video_links)
     if extras:
         result = f"{result}\n\n---\n\n{extras}"

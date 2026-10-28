@@ -292,6 +292,8 @@ def convert_block(block) -> str:
         return convert_bookmark_block(block)
     if bt in ("grid", "gallery") or "grid-block" in cls:
         return convert_grid_block(block)
+    if bt in ("bitable", "base_refer") or "bitable" in cls:
+        return ""  # 多维表格块: UI 壳文本不入正文, 数据由捕获通道提取
     if bt in ("file", "attachment") or "file-block" in cls:
         return convert_file_block(block)
     if bt in ("formula", "equation", "math"):

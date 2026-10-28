@@ -333,6 +333,14 @@ class Crawler:
                                                        all_views=self.cfg.bitable_all_views)
                     if tmd:
                         md = f"{md or ''}\n\n---\n\n{tmd}"
+            # 内嵌记录视图(画册等)懒初始化不拉数据: 无表格产出时把 UI 壳替换为诚实占位
+            # (检测在提取前完成 — 提取的整页滚动会把虚拟化块卸载, 事后检测会丢)
+            if kind == "doc" and "| ---" not in (md or ""):
+                if info.get("_has_embed") and not self._bt_hits.get(page):
+                    md = ("<!-- 内嵌多维表格视图 (记录视图懒初始化, 未拉取到数据) -->\n\n"
+                          "**本页为内嵌多维表格视图**，飞书仅在用户聚焦时加载其数据，"
+                          "自动抓取未获取到表格内容。\n\n"
+                          "如需查看表格，请打开原页面：上方「来源」。")
             if _is_browser_error_page(md or ""):
                 self._st["failed"] += 1
                 self.store.mark_failed(token, "browser_error_page")
@@ -440,9 +448,16 @@ class Crawler:
             if md:
                 return md, {}, "folder"
 
+        has_embed_early = False
+        try:
+            has_embed_early = await page.evaluate(
+                "() => !!document.querySelector('[data-block-type=\"bitable\"],[data-block-type=\"base_refer\"]')")
+        except Exception:
+            pass
         md, blob = await extract.extract_page(page, w.images,
                                               render_timeout=self.cfg.render_timeout,
                                               video_links=self.cfg.video_as_link)
+        info["_has_embed"] = has_embed_early
         # bitable SPA 晚绑定兜底: ?table= 在路由判定后才附加到地址栏
         # (obj_type=8 页的空间 ID 探测失败场景) — DOM 过短时按活页 URL 重试直采
         if len(md or "") < 400 and "?table=" in (page.url or ""):
