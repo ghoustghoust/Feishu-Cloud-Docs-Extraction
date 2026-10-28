@@ -54,31 +54,41 @@ async def _collect_embedded(page, video_links: bool = True) -> str:
             parts.append(f"- 视频地址: {s}")
         parts.append("")
 
-    for b in media.get("bases", []):  # 内嵌多维表格: 属性里找 obj/base token
-        token = ""
-        for attr in b.get("attrs", []):
-            if re.search(r"obj.?token|object.?id|data.?token", attr, re.I):
-                m = re.search(r"([A-Za-z0-9]{15,30})$", attr)
-                if m:
-                    token = m.group(1)
-                    break
-        if token:
+    # 内嵌多维表格 (base_refer): 属性不可靠, 改为资源时序发现 —
+    # 页面加载内嵌表必发 /space/api/v1/bitable/{base}/records?tableId=..&viewId=.. 请求,
+    # 每枚唯一三元组 = 一张表, 走 bitable API 直采拿到真实表格数据
+    try:
+        triples = await page.evaluate("""() => {
+            const seen = new Map();
+            for (const u of performance.getEntriesByType('resource').map(e => e.name)) {
+                const m = u.match(/\\/space\\/api\\/v1\\/bitable\\/([^/?#]+)\\/records/);
+                if (!m) continue;
+                const base = m[1];
+                const t = u.match(/[?&]table[Ii][Dd]=([^&]+)/);
+                const v = u.match(/[?&]view[Ii][Dd]=([^&]+)/);
+                const key = base + '|' + (t ? t[1] : '');
+                if (!seen.has(key)) seen.set(key, {base, tableId: t ? t[1] : '', viewId: v ? v[1] : ''});
+            }
+            return [...seen.values()];
+        }""")
+    except Exception:
+        triples = []
+    if triples:
+        from urllib.parse import urlparse as _up
+        try:
+            origin = f"{_up(page.url).scheme}://{_up(page.url).netloc}"
+        except Exception:
             origin = ""
-            try:
-                from urllib.parse import urlparse
-                origin = f"{urlparse(page.url).scheme}://{urlparse(page.url).netloc}"
-            except Exception:
-                pass
-            if origin:
-                md, _ = await bitable.to_markdown(
-                    page, f"{origin}/base/{token}", all_views=False)
-                if md:
-                    parts.append(md)
-                    parts.append("")
-                    continue
-        if b.get("text"):
-            parts.append(f"**内嵌多维表格**: {b['text']}")
-            parts.append("")
+        for t in triples[:5]:  # 单页内嵌表上限, 防极端页面失控
+            if not (origin and t.get("base") and t.get("tableId")):
+                continue
+            url = f"{origin}/base/{t['base']}?table={t['tableId']}"
+            if t.get("viewId"):
+                url += f"&view={t['viewId']}"
+            md, _ = await bitable.to_markdown(page, url, all_views=False)
+            if md:
+                parts.append(md)
+                parts.append("")
     return "\n".join(parts)
 
 
@@ -161,9 +171,14 @@ async def extract_page(page, images_dir: Path, render_timeout: float = 25.0,
     await wait_content_ready(page, timeout=render_timeout, settle_rounds=3)
 
     # 展开折叠 + 禁用 content-visibility (两轮)
+    # 点击限定非链接元素: <a target=_blank> 被 click 会弹空白页 (终极测试教训)
     expand_js = """
         () => {
-            document.querySelectorAll('[aria-expanded="false"]').forEach(el => {try{el.click()}catch(e){}});
+            const safeClick = (el) => {
+                if (el.closest('a, [target="_blank"]')) return;
+                try { el.click(); } catch (e) {}
+            };
+            document.querySelectorAll('[aria-expanded="false"]').forEach(safeClick);
             document.querySelectorAll('details:not([open])').forEach(el => {try{el.setAttribute('open','')}catch(e){}});
             document.querySelectorAll('*').forEach(el => {
                 try{el.style.setProperty('content-visibility','visible','important');
@@ -191,7 +206,10 @@ async def extract_page(page, images_dir: Path, render_timeout: float = 25.0,
 
     await page.evaluate("""
         () => {
-            document.querySelectorAll('[aria-expanded="false"]').forEach(el => {try{el.click()}catch(e){}});
+            document.querySelectorAll('[aria-expanded="false"]').forEach(el => {
+                if (el.closest('a, [target="_blank"]')) return;
+                try{el.click()}catch(e){}
+            });
             document.querySelectorAll('*').forEach(el => {
                 try{el.style.setProperty('content-visibility','visible','important');
                     el.style.setProperty('contain','none','important')}catch(e){}

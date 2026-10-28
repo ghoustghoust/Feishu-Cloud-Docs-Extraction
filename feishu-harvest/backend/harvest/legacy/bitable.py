@@ -51,14 +51,14 @@ async def _request(page, url: str) -> dict | None:
 
 
 async def resolve_base(page) -> str | None:
-    """从 resource timing 提取真实 base token (obj_token)。"""
+    """从 resource timing 提取真实 base token (obj_token); 过滤 event 等路径杂质。"""
     try:
         bases = await page.evaluate(
             """() => {
                 const bases = new Set();
                 for (const u of performance.getEntriesByType('resource').map(e => e.name)) {
                     const m = u.match(/\\/space\\/api\\/v1\\/bitable\\/([^/?#]+)\\/clientvars/);
-                    if (m) bases.add(m[1]);
+                    if (m && /^[A-Za-z0-9]{15,}$/.test(m[1])) bases.add(m[1]);
                 }
                 return [...bases];
             }""")
@@ -119,7 +119,11 @@ async def to_markdown(page, url: str, all_views: bool = False) -> tuple[str, dic
         if not token:
             return "", {}
         origin = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-        base = await resolve_base(page) or token
+        # /base/ 路径的 token 即真实 base token (内嵌表格捕获场景); /wiki/ 需从资源时序解析
+        if re.search(r"/base/", urlparse(url).path):
+            base = token
+        else:
+            base = await resolve_base(page) or token
 
         cv_url = f"{origin}/space/api/v1/bitable/{base}/clientvars"
         cv_url += (f"?tableID={table_id}&viewID={view_id}&recordLimit=200"

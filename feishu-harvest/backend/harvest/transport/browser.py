@@ -80,30 +80,41 @@ class BrowserService:
     def context(self):
         return self._context
 
+    def _attach_popup_guard(self, page) -> None:
+        """自动关闭页面脚本触发的弹窗 (target=_blank / window.open) — 空白标签来源之一。"""
+        def on_popup(popup):
+            try:
+                asyncio.get_event_loop().create_task(popup.close())
+            except Exception:
+                pass
+        page.on("popup", on_popup)
+
     async def ensure_context(self):
-        """惰性启动浏览器; 已启动则复用。"""
+        """惰性启动浏览器; 已启动且主页面存活则复用 (主页面被换/关闭后自动取回活页)。"""
         async with self._lock:
-            if self._context and self._page:
+            if (self._context and self._page and not self._page.is_closed()):
                 return self._context
             if self._pw is None:
                 from playwright.async_api import async_playwright
                 self._pw = await async_playwright().start()
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            self._context = await self._pw.chromium.launch_persistent_context(
-                str(PROFILE_DIR), headless=False,
-                viewport={"width": 1400, "height": 900},
-                args=CHROMIUM_ARGS)
-            if not self._context.pages:
-                self._page = await self._context.new_page()
-            else:
-                self._page = self._context.pages[0]
+            if not self._context:
+                self._context = await self._pw.chromium.launch_persistent_context(
+                    str(PROFILE_DIR), headless=False,
+                    viewport={"width": 1400, "height": 900},
+                    args=CHROMIUM_ARGS)
+            pages = [p for p in self._context.pages if not p.is_closed()]
+            self._page = pages[0] if pages else await self._context.new_page()
+            self._attach_popup_guard(self._page)
             return self._context
 
     async def new_page(self):
-        """从同一 context 开新 Tab (共享登录态)。"""
+        """从同一 context 开新 Tab (共享登录态); 带弹窗守卫。"""
         if not self._context:
             await self.ensure_context()
-        return await self._context.new_page()
+        page = await self._context.new_page()
+        self._attach_popup_guard(page)
+        return page
 
     async def check_login(self) -> bool | None:
         await self.ensure_context()
@@ -161,7 +172,7 @@ class PagePool:
         self._sem.release()
 
     async def replace(self, dead) -> object:
-        """Tab 崩溃 (TargetClosedError) 后换新页, 避免带尸体继续产生连锁失败。"""
+        """Tab 崩溃 (TargetClosedError) 后换新页; 若死页是主页面则同步 service 引用。"""
         try:
             if dead in self._all:
                 self._all[self._all.index(dead)] = None
@@ -174,6 +185,8 @@ class PagePool:
                 self._all[self._all.index(None)] = new
             else:
                 self._all.append(new)
+            if dead is self._svc.page:  # 主页面被换: 引用指向新页, 防悬空
+                self._svc._page = new
             return new
         except Exception:
             return dead  # 换新失败则原样归还, 由上层按普通失败处理

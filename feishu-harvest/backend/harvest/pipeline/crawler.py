@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from pathlib import Path
 import re
 import time
 from urllib.parse import urlparse
@@ -36,6 +37,7 @@ class Crawler:
         self._stop = asyncio.Event()
         self._task: asyncio.Task | None = None
         self.last_result: dict = {}
+        self._bt_hits: dict = {}  # page → {(base, tableId, viewId)} 网络层内嵌表格捕获
 
     # ---------- 生命周期 ----------
     def start(self, url: str, tokens: list[str] | None = None, fresh: bool = False) -> None:
@@ -83,7 +85,7 @@ class Crawler:
 
             # ---- 阶段 1: 发现 ----
             bus.publish({"type": "run", "state": "running", "phase": "discover"})
-            pages = await self._discover(page, url, tokens)
+            pages = await self._discover(page, url, tokens, fresh=fresh)
             total = len(pages)
             if total == 0:
                 raise RuntimeError("未发现任何页面")
@@ -137,13 +139,21 @@ class Crawler:
             service.busy = False
 
     # ---------- 发现 ----------
-    async def _discover(self, page, url: str, tokens: list[str] | None) -> list[dict]:
-        domain = urlparse(url).netloc
+    async def _discover(self, page, url: str, tokens: list[str] | None,
+                        fresh: bool = False) -> list[dict]:
         if tokens:  # 子集爬取: 树来自库中已有发现结果
             pages = self._subset(url, tokens)
             if pages is not None:
                 bus.publish({"type": "discover", "stage": "subset", "total": len(pages)})
                 return pages
+        # 增量默认: 库中已有该知识库的树 → 跳过全量 BFS (省 ~10 分钟);
+        # fresh=True (界面"全量重爬") 才重新发现
+        if not fresh:
+            stored = self._store_pages(url)
+            if stored:
+                bus.publish({"type": "discover", "stage": "reuse_store",
+                             "total": len(stored)})
+                return stored
         pages = await discover_tree(page, url, self.store)
         if not pages:  # 单页回退
             single = single_page_fallback(url)
@@ -152,7 +162,7 @@ class Crawler:
                 pages = [single]
         return pages
 
-    def _subset(self, url: str, tokens: list[str]) -> list[dict] | None:
+    def _subset(self, url: str, tokens: list[str] | None = None) -> list[dict] | None:
         """选中 token 及其全部后代; 树为空返回 None 让调用方先跑发现。"""
         m = re.search(r"/wiki/([^/?#]+)", urlparse(url).path)
         root = m.group(1) if m else ""
@@ -212,6 +222,9 @@ class Crawler:
 
         async def worker():
             page = await self.pool.acquire()
+            if not getattr(page, "_bt_hooked", False):  # 内嵌表格: 网络层捕获
+                page.on("request", lambda req: self._bt_capture(page, req.url))
+                page._bt_hooked = True
             try:
                 while not self._stop.is_set():
                     try:
@@ -231,11 +244,22 @@ class Crawler:
                 "chars": s["chars"], "files_downloaded": s["files"],
                 "cached": s["cached"], "stopped": self._stop.is_set()}
 
+    def _bt_capture(self, page, url: str) -> None:
+        """页面任意时刻发出的 bitable records 请求 → 内嵌表格三元组 (滚动触发懒加载也覆盖)。"""
+        m = re.search(r"/space/api/v1/bitable/([^/?#]+)/records", url)
+        if not m:
+            return
+        t = re.search(r"[?&]table[Ii][Dd]=([^&]+)", url)
+        v = re.search(r"[?&]view[Ii][Dd]=([^&]+)", url)
+        self._bt_hits.setdefault(page, set()).add(
+            (m.group(1), t.group(1) if t else "", v.group(1) if v else ""))
+
     async def _extract_one(self, page, info: dict, w: writers.TreeWriter,
                            remaining: int, todo: int):
         """提取单页; Tab 崩溃时换新页并返回 (worker 回绑), 失败节点留给下轮增量重试。"""
         token, page_url = info["token"], info["url"]
         title = strip_zws(info.get("title", "")) or token[:8]
+        self._bt_hits[page] = set()
         idx = todo - remaining + 1
         self.store.mark_running(token)
         bus.publish({"type": "page", "token": token, "title": title, "index": idx,
@@ -299,6 +323,16 @@ class Crawler:
                     except Exception:
                         pass
                     await asyncio.sleep(4)
+            if kind != "bitable":
+                origin = f"{urlparse(page_url).scheme}://{urlparse(page_url).netloc}"
+                for base, tid, vid in sorted(self._bt_hits.get(page, set()))[:5]:
+                    if not (base and tid):
+                        continue
+                    u = f"{origin}/base/{base}?table={tid}" + (f"&view={vid}" if vid else "")
+                    tmd, _ = await bitable.to_markdown(page, u,
+                                                       all_views=self.cfg.bitable_all_views)
+                    if tmd:
+                        md = f"{md or ''}\n\n---\n\n{tmd}"
             if _is_browser_error_page(md or ""):
                 self._st["failed"] += 1
                 self.store.mark_failed(token, "browser_error_page")
@@ -330,13 +364,16 @@ class Crawler:
                 for src, local in await asyncio.gather(*(_dl(s) for s in ext_urls)):
                     if local:
                         md = md.replace(src, local)
-            name = w.write_page(token, title, page_url, md)
+            node0 = self.store.node(token) or {}
+            prev = Path(node0["file_path"]) if node0.get("file_path") else None
+            path_str = w.write_page(token, title, page_url, md, overwrite=prev)
+            name = Path(path_str).name if path_str else None
             h = hashlib.md5(md.encode()).hexdigest()
             if kind == "file":
                 self._st["files"] += 1
             self._st["done"] += 1
             self._st["chars"] += len(md)
-            self.store.mark_done(token, len(md), h)
+            self.store.mark_done(token, len(md), h, file_path=path_str or "")
             bus.publish({"type": "page", "token": token, "title": title,
                          "status": "saved" if name else "section",
                          "chars": len(md), "file": name})
@@ -406,6 +443,13 @@ class Crawler:
         md, blob = await extract.extract_page(page, w.images,
                                               render_timeout=self.cfg.render_timeout,
                                               video_links=self.cfg.video_as_link)
+        # bitable SPA 晚绑定兜底: ?table= 在路由判定后才附加到地址栏
+        # (obj_type=8 页的空间 ID 探测失败场景) — DOM 过短时按活页 URL 重试直采
+        if len(md or "") < 400 and "?table=" in (page.url or ""):
+            tmd, tblob = await bitable.to_markdown(page, page.url,
+                                                   all_views=self.cfg.bitable_all_views)
+            if tmd and len(tmd) > len(md or ""):
+                return tmd, (tblob if isinstance(tblob, dict) else {}), "bitable"
         if (not md or len(md) < 30) and obj_type not in (None, 22):
             # DOM 无内容且非普通文档 → sheet/幻灯/画板等不支持的类型
             return self._unsupported_md(info, obj_type, live_url, origin), {}, "unsupported"

@@ -28,6 +28,33 @@ def _busy() -> str | None:
     return None
 
 
+import ipaddress
+
+_ALLOWED_SUFFIXES = ("feishu.cn", "larksuite.com", "f.mioffice.cn")
+
+
+def _valid_target_url(url: str) -> str | None:
+    """校验目标 URL: 仅 http/https, host 必须为飞书/ Lark 域名 (拒绝 localhost/私网/保留地址)。"""
+    try:
+        u = urlparse(url)
+    except Exception:
+        return "URL 解析失败"
+    if u.scheme not in ("http", "https"):
+        return "仅支持 http/https"
+    host = (u.hostname or "").lower()
+    if not host:
+        return "缺少 host"
+    if not any(host == s or host.endswith("." + s) for s in _ALLOWED_SUFFIXES):
+        return f"仅支持飞书域名 ({', '.join(_ALLOWED_SUFFIXES)})"
+    try:  # 字面 IP 一律拒绝 (私有/环回/保留地址防护)
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_reserved or ip.is_link_local:
+            return "拒绝内网/环回地址"
+    except ValueError:
+        pass  # 域名 (已按白名单校验)
+    return None
+
+
 # ---------- 基础 ----------
 @router.get("/health")
 async def health():
@@ -115,6 +142,8 @@ class LoginReq(BaseModel):
 async def login_start(req: LoginReq):
     if err := _busy():
         return {"ok": False, "error": err}
+    if req.url and (err2 := _valid_target_url(req.url)):
+        return {"ok": False, "error": err2}
     asyncio.create_task(_login_flow(req.timeout_sec, req.url))
     return {"ok": True, "detail": "已打开浏览器窗口, 请扫码登录"}
 
@@ -204,8 +233,8 @@ class CrawlReq(BaseModel):
 async def crawl_start(req: CrawlReq):
     if err := _busy():
         return {"ok": False, "error": err}
-    if not req.url.startswith("http"):
-        return {"ok": False, "error": "URL 必须以 http 开头"}
+    if err2 := _valid_target_url(req.url):
+        return {"ok": False, "error": err2}
     cfg = config.get().merged(**req.model_dump(
         include={"output_dir", "export_format", "tabs"}))
     crawler.cfg = cfg
@@ -241,6 +270,8 @@ async def tree_reorganize(root: str = ""):
 # ---------- 诊断 ----------
 @router.get("/debug/recon")
 async def debug_recon(url: str, sample_per_type: int = 2):
+    if err := _valid_target_url(url):
+        return {"ok": False, "error": err}
     """格式侦察: 采集导航树全量节点 → 逐节点查询 obj_type → 每类抽样访问收集块类型。
 
     用于评估目标知识库的格式构成 (bitable/sheet/file/folder 等), 不产生输出文件。
@@ -325,6 +356,8 @@ class EvalReq(BaseModel):
 @router.post("/debug/eval")
 async def debug_eval(req: EvalReq):
     """诊断用: 打开页面后执行自定义 JS 并返回结果 (仅本地调试用)。"""
+    if err := _valid_target_url(req.url):
+        return {"ok": False, "error": err}
     await browser.service.ensure_context()
     page = browser.service.page
     try:
@@ -339,9 +372,31 @@ async def debug_eval(req: EvalReq):
     return {"ok": True, "result": result}
 
 
+@router.get("/debug/bitable")
+async def debug_bitable(url: str, page_url: str = ""):
+    """诊断: 在当前页面对指定 bitable URL 直跑 to_markdown, 返回真实异常。"""
+    import traceback
+    from harvest.legacy import bitable as _bt
+    await browser.service.ensure_context()
+    page = browser.service.page
+    if page_url:
+        try:
+            await page.goto(page_url, wait_until="domcontentloaded", timeout=40000)
+            await asyncio.sleep(5)
+        except Exception:
+            pass
+    try:
+        md, blob = await _bt.to_markdown(page, url, all_views=False)
+        return {"ok": True, "md_len": len(md), "head": md[:300]}
+    except Exception:
+        return {"ok": False, "traceback": traceback.format_exc()[-800:]}
+
+
 @router.get("/debug/visit")
 async def debug_visit(url: str):
     """打开页面并返回登录检测各分支的证据 (定位误判用)。"""
+    if err := _valid_target_url(url):
+        return {"ok": False, "error": err}
     await browser.service.ensure_context()
     page = browser.service.page
     try:

@@ -53,9 +53,11 @@ class TreeWriter:
             return (self.out.joinpath(*chain) if chain else self.out), True
         return (self.out.joinpath(*chain[:-1]) if len(chain) > 1 else self.out), False
 
-    def write_page(self, token: str, title: str, url: str, md: str) -> str | None:
-        """写入一个页面; 章节节点有正文时写 _intro.md (返回 None), 叶子返回文件名。
+    def write_page(self, token: str, title: str, url: str, md: str,
+                   overwrite: Path | None = None) -> str | None:
+        """写入一个页面; 章节节点有正文时写 _intro.md, 叶子返回文件路径。
 
+        overwrite: 重爬时传入该节点上次的文件路径 → 确定性覆盖 (不再生成 _02 副本)。
         图片统一存根目录 images/, 写入子目录时按深度重写为 ../images/ 相对引用。
         """
         doc = f"# {title}\n\n> 来源: {url}\n\n---\n\n{md}"  # 来源仅存文字, 不做跳转链接
@@ -65,17 +67,31 @@ class TreeWriter:
         if depth and "](images/" in doc:
             doc = doc.replace("](images/", f"]({'../' * depth}images/")
         if is_section:
+            intro = target_dir / "_intro.md"
             if len(md) >= 30:
-                atomic_write(target_dir / "_intro.md", doc)
-            return None
-        base = sfn(title)
-        target = target_dir / f"{base}.md"
-        k = 2
-        while target.exists():
-            target = target_dir / f"{base}_{k:02d}.md"
-            k += 1
+                atomic_write(intro, doc)
+            return str(intro)
+        if overwrite and overwrite.parent == target_dir:
+            target = overwrite  # 重爬: 覆盖同一位置
+        else:
+            base = sfn(title)
+            target = target_dir / f"{base}.md"
+            if target.exists():
+                # 老节点无 file_path 记录: 用来源行 token 判定是否本页上次落盘
+                same_page = False
+                try:
+                    head = target.read_text(encoding="utf-8", errors="replace")[:600]
+                    m = re.search(r"> 来源: (\S+)", head)
+                    same_page = bool(m and token in m.group(1))
+                except Exception:
+                    pass
+                if not same_page:  # 真·重名 (不同页面) → 副本避让
+                    k = 2
+                    while target.exists():
+                        target = target_dir / f"{base}_{k:02d}.md"
+                        k += 1
         atomic_write(target, doc)
-        return target.name
+        return str(target)
 
     def write_index(self, pages_total: int, chars: int) -> None:
         from collections import defaultdict

@@ -14,7 +14,7 @@ from harvest.events import bus
 from harvest.store.db import Store
 from harvest.textutil import strip_zws
 
-_EXPAND_JS = """()=>{document.querySelectorAll('.workspace-tree-view-node-expand-arrow--collapsed').forEach(el=>{try{(el.querySelector('[role="button"]')||el).click()}catch(e){}})}"""
+_EXPAND_JS = """()=>{document.querySelectorAll('.workspace-tree-view-node-expand-arrow--collapsed').forEach(el=>{try{if(el.closest('a,[target="_blank"]'))return;(el.querySelector('[role="button"]')||el).click()}catch(e){}})}"""
 
 _SCRAPE_JS = """
     (domain) => {

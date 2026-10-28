@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     chars INTEGER NOT NULL DEFAULT 0,
     content_hash TEXT NOT NULL DEFAULT '',
     error TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
     updated_at REAL NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent);
@@ -62,6 +63,10 @@ class Store:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.executescript(_SCHEMA)
+        # 旧库迁移: 无 file_path 列则补上
+        cols = {r[1] for r in self._conn.execute("PRAGMA table_info(nodes)")}
+        if "file_path" not in cols:
+            self._conn.execute("ALTER TABLE nodes ADD COLUMN file_path TEXT NOT NULL DEFAULT ''")
         self._conn.commit()
 
     def close(self) -> None:
@@ -112,10 +117,12 @@ class Store:
             (time.time(), token))
         self._conn.commit()
 
-    def mark_done(self, token: str, chars: int, content_hash: str) -> None:
+    def mark_done(self, token: str, chars: int, content_hash: str,
+                  file_path: str = "") -> None:
         self._conn.execute(
-            "UPDATE nodes SET status='done', chars=?, content_hash=?, error='', updated_at=? "
-            "WHERE token=?", (chars, content_hash, time.time(), token))
+            "UPDATE nodes SET status='done', chars=?, content_hash=?, error='', "
+            "file_path=?, updated_at=? WHERE token=?",
+            (chars, content_hash, file_path, time.time(), token))
         self._conn.commit()
 
     def mark_failed(self, token: str, error: str) -> None:
