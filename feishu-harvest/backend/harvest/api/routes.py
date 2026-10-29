@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -193,8 +194,15 @@ async def tree_roots():
     rows = crawler.store._conn.execute(
         "SELECT root_token, COUNT(*) n FROM nodes WHERE root_token != '' "
         "GROUP BY root_token").fetchall()
-    return {"ok": True, "roots": [{"token": r["root_token"], "count": r["n"]}
-                                  for r in rows]}
+    netloc = ""
+    r = crawler.store._conn.execute(
+        "SELECT root_url FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    if r:
+        netloc = urlparse(r["root_url"]).netloc if isinstance(r, dict) else urlparse(r[0]).netloc
+    return {"ok": True, "roots": [
+        {"token": r["root_token"], "count": r["n"],
+         "url": f"https://{netloc}/wiki/{r['root_token']}" if netloc else ""}
+        for r in rows]}
 
 
 @router.get("/tree")
@@ -219,6 +227,40 @@ async def tree(root: str = ""):
 
 
 # ---------- 爬取 ----------
+class RediscoverReq(BaseModel):
+    url: str
+
+
+@router.post("/tree/rediscover")
+async def tree_rediscover(req: RediscoverReq):
+    """漏爬检测: 重跑发现 (库中已有节点作种子), 找出上游新增页面, 不提取内容。"""
+    if err := _busy():
+        return {"ok": False, "error": err}
+    if err2 := _valid_target_url(req.url):
+        return {"ok": False, "error": err2}
+    m = re.search(r"/wiki/([^/?#]+)", urlparse(req.url).path)
+    root = m.group(1) if m else ""
+    before = {n["token"] for n in crawler.store.nodes_by_root(root)}
+    await browser.service.ensure_context()
+    page = browser.service.page
+    browser.service.busy = True
+    try:
+        try:
+            await page.goto(req.url, wait_until="domcontentloaded", timeout=60000)
+        except Exception:
+            pass
+        await asyncio.sleep(6)
+        from harvest.pipeline.discover import discover_tree
+        pages = await discover_tree(page, req.url, crawler.store)
+    finally:
+        browser.service.busy = False
+    new = [p for p in pages if p["token"] not in before]
+    bus.publish({"type": "log", "text": f"查新页完成: 共 {len(pages)} 节点, 新增 {len(new)}",
+                 "level": "info"})
+    return {"ok": True, "total": len(pages), "new": len(new),
+            "new_titles": [p.get("title", "") for p in new][:20]}
+
+
 class CrawlReq(BaseModel):
     url: str
     tokens: list[str] | None = None

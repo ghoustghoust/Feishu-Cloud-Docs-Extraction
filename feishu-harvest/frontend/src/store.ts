@@ -123,6 +123,10 @@ class Feed {
         if (ev.state === "ok") this.log("登录成功");
         break;
       }
+      case "log": {
+        this.log(ev.text, ev.level ?? "info");
+        break;
+      }
     }
     this.emit();
   }

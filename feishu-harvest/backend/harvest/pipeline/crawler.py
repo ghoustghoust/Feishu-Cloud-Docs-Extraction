@@ -64,6 +64,7 @@ class Crawler:
         if self.cfg.clean:  # 可选: 清空输出目录 (默认增量保留)
             import shutil
             shutil.rmtree(out_dir, ignore_errors=True)
+        self.store.interrupt_stale_runs()  # 崩溃/关机遗留的 running 运行 → interrupted
         run_id = self.store.start_run(url, str(out_dir))
         m2 = re.search(r"/wiki/([^/?#]+)", urlparse(url).path)
         self.store.reset_interrupted(m2.group(1) if m2 else "")  # 上次中断遗留 running → pending
@@ -219,6 +220,7 @@ class Crawler:
                     "files": 0, "total": total, "cached": total - todo,
                     "t0": time.time(), "need_login": False}
         self._login_fail = 0
+        self._net_fail = 0
 
         async def worker():
             page = await self.pool.acquire()
@@ -285,6 +287,12 @@ class Crawler:
                 if _is_target_closed(e):
                     page = await self.pool.replace(page)
         self.gate.record(ok, latency=time.monotonic() - t0 if ok else None)
+        if not ok:  # 连续导航失败 → 疑似断网, 熔断停止 (节点留 failed 下轮自动重试)
+            self._net_fail += 1
+            if self._net_fail >= 8:
+                bus.publish({"type": "log", "level": "warn",
+                             "text": "连续 8 页导航失败, 疑似网络中断, 任务提前停止 (下次续爬自动重试)"})
+                self._stop.set()
         await asyncio.sleep(3)  # SPA 渲染起步
 
         # 登录三态: 连续 3 页未登录 → Cookie 过期, 暂停任务
@@ -412,6 +420,7 @@ class Crawler:
                 self._st["files"] += 1
             self._st["done"] += 1
             self._st["chars"] += len(md)
+            self._net_fail = 0
             self.store.mark_done(token, len(md), h, file_path=path_str or "")
             bus.publish({"type": "page", "token": token, "title": title,
                          "status": "saved" if name else "section",

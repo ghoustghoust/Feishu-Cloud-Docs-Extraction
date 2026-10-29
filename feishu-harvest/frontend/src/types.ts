@@ -39,6 +39,7 @@ export interface TreeNode {
   parent: string;
   level: number;
   status?: string;
+  error?: string;
   children: TreeNode[];
 }
 

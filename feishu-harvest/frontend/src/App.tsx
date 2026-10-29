@@ -16,7 +16,7 @@ function rootOf(url: string | undefined): string {
 export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [rootToken, setRootToken] = useState("");
-  const [roots, setRoots] = useState<{ token: string; count: number }[]>([]);
+  const [roots, setRoots] = useState<{ token: string; count: number; url?: string }[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
   const runUrl = useFeed((s) => s.run.url);
   const runState = useFeed((s) => s.run.state);

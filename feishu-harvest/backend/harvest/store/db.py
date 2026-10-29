@@ -90,6 +90,13 @@ class Store:
             (status, time.time(), json.dumps(stats, ensure_ascii=False), run_id))
         self._conn.commit()
 
+    def interrupt_stale_runs(self) -> None:
+        """进程崩溃/关机遗留的 running 运行标记为 interrupted (下次启动时回收)。"""
+        self._conn.execute(
+            "UPDATE runs SET status='interrupted', finished_at=? WHERE status='running'",
+            (time.time(),))
+        self._conn.commit()
+
     # ---------- nodes ----------
     def upsert_node(self, token: str, title: str, parent: str, level: int,
                     root_token: str = "", obj_type: int | None = None) -> None:
