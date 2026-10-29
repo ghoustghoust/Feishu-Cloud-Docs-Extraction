@@ -372,6 +372,22 @@ async def debug_eval(req: EvalReq):
     return {"ok": True, "result": result}
 
 
+@router.get("/debug/embed_mine")
+async def debug_embed_mine(url: str):
+    """诊断: 硬加载页面后返回 init script 捕获的 docx blocks 片段 (挖内嵌表三元组)。"""
+    if err := _valid_target_url(url):
+        return {"ok": False, "error": err}
+    await browser.service.ensure_context()
+    page = browser.service.page
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=40000)
+    except Exception:
+        pass
+    await asyncio.sleep(8)
+    cap = await page.evaluate("() => window.__fh_cap || []")
+    return {"ok": True, "n": len(cap), "cap": cap}
+
+
 @router.get("/debug/bitable")
 async def debug_bitable(url: str, page_url: str = ""):
     """诊断: 在当前页面对指定 bitable URL 直跑 to_markdown, 返回真实异常。"""

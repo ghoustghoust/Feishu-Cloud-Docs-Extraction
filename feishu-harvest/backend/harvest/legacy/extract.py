@@ -293,11 +293,16 @@ async def extract_page(page, images_dir: Path, render_timeout: float = 25.0,
 
     # 内嵌多维表格是懒加载 iframe: 逐块 scrollIntoView 停留, 强制触发其 records 请求
     # (网络层监听器在 crawler 侧捕获三元组 → 后续 to_markdown 直采)
+    # 记录视图(画册等)仅滚动不初始化, 需点击聚焦后才发 records 请求
     try:
         n_embeds = await page.evaluate("""async () => {
-            const blocks = [...document.querySelectorAll('[data-block-type="base_refer"]')];
+            const blocks = [...document.querySelectorAll(
+                '[data-block-type="base_refer"], [data-block-type="bitable"]')];
             for (const b of blocks.slice(0, 5)) {
                 try { b.scrollIntoView({block: 'center'}); } catch (e) {}
+                await new Promise(r => setTimeout(r, 2000));
+                try { b.click(); } catch (e) {}
+                try { b.dispatchEvent(new MouseEvent('click', {bubbles: true})); } catch (e) {}
                 await new Promise(r => setTimeout(r, 2500));
             }
             return blocks.length;

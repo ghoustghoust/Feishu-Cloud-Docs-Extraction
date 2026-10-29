@@ -126,7 +126,7 @@ async def to_markdown(page, url: str, all_views: bool = False) -> tuple[str, dic
             base = await resolve_base(page) or token
 
         cv_url = f"{origin}/space/api/v1/bitable/{base}/clientvars"
-        cv_url += (f"?tableID={table_id}&viewID={view_id}&recordLimit=200"
+        cv_url += (f"?tableID={table_id}&viewID={view_id or ''}&recordLimit=200"
                    f"&ondemandLimit=200&needBase=true&viewLazyLoad=true"
                    if table_id else "?needBase=true")
         j = await _request(page, cv_url)
@@ -192,15 +192,48 @@ async def to_markdown(page, url: str, all_views: bool = False) -> tuple[str, dic
             if len(views) > 1 and len(target_views) == 1:
                 md.append(f"> 共 {len(views)} 个视图: " + " / ".join(v["name"] for v in views))
                 md.append("")
-            md.append("| " + " | ".join(h.replace("|", "\\|") for h in
-                                        [f["name"] for f in fields]) + " |")
-            md.append("| " + " | ".join(["---"] * len(fields)) + " |")
-            for rec in all_records:
-                fv = rec.get("fields") or rec
-                md.append("| " + " | ".join(_cell_text(fv.get(f["id"])) for f in fields) + " |")
+            md.extend(_render_records(fields, all_records))
             md.append("")
         if total_records == 0:
             return "", {}
         return "\n".join(md), {}
     except Exception:
         return "", {}
+
+
+def _render_records(fields: list[dict], records: list) -> list[str]:
+    """窄表 → markdown 表格; 宽表/长文本 → 每记录一张卡片 (首字段作标题)。"""
+    rows = [[_cell_text((r.get("fields") or r).get(f["id"])) for f in fields] for r in records]
+    longest = max((len(c) for row in rows for c in row), default=0)
+    if len(fields) <= 4 and longest <= 60:
+        out = ["| " + " | ".join(h.replace("|", "\\|") for h in [f["name"] for f in fields]) + " |",
+               "| " + " | ".join(["---"] * len(fields)) + " |"]
+        out += ["| " + " | ".join(c.replace("|", "\\|") for c in row) + " |" for row in rows]
+        return out
+    out: list[str] = []
+    for row in rows:
+        vals = [(f["name"], c) for f, c in zip(fields, row) if c]
+        if not vals:
+            continue
+        k = _title_idx(vals)
+        title = vals[k][1]
+        out.append(f"#### {title if len(title) <= 60 else title[:57] + '…'}")
+        out.append("")
+        for name, c in [v for i, v in enumerate(vals) if i != k]:
+            out.append(f"- **{name}**: {c}")
+        out.append("")
+    return out
+
+
+def _title_idx(vals: list[tuple[str, str]]) -> int:
+    """卡片标题字段: 优先名称类字段; 否则跳过附件文件名/内部 ID/裸链接的首个实质值。"""
+    for i, (name, _) in enumerate(vals):
+        if any(k in name for k in ("书名", "名称", "标题", "名字", "文本")):
+            return i
+    for i, (_, v) in enumerate(vals):
+        if len(v) < 6 or re.search(r"\.(png|jpe?g|gif|webp|svg)$", v, re.I) \
+                or re.fullmatch(r"(opt|rec|tbl|vew|app|blk)[A-Za-z0-9]{6,}", v) \
+                or v.startswith("["):
+            continue
+        return i
+    return 0

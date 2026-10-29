@@ -42,6 +42,35 @@ _LOGIN_JS = """() => {
     return null;
 }"""
 
+# 硬加载时 docx blocks 响应携带内嵌多维表格的 base/table/view 三元组,
+# 但画廊等记录视图在自动化环境下不自行初始化 — 预先捕获响应体供挖掘。
+_CAPTURE_JS = """
+window.__fh_cap = [];
+const __fh_grab = (u, t) => {
+  try {
+    if (!u || !(u.includes('docx/blocks') || u.includes('bitable'))) return;
+    const i = Math.max(t.indexOf('base_refer'), t.indexOf('bitable'));
+    if (i >= 0 && window.__fh_cap.length < 6)
+      window.__fh_cap.push(u.slice(0, 120) + ' ||| ' + t.slice(Math.max(0, i - 400), i + 1200));
+  } catch (e) {}
+};
+const __of = window.fetch;
+window.fetch = async (...a) => {
+  const r = await __of(...a);
+  try {
+    const u = String(a[0] && a[0].url ? a[0].url : a[0]);
+    if (u.includes('docx/blocks') || u.includes('bitable')) __fh_grab(u, await r.clone().text());
+  } catch (e) {}
+  return r;
+};
+const __ox = XMLHttpRequest.prototype.open, __os = XMLHttpRequest.prototype.send;
+XMLHttpRequest.prototype.open = function (m, u) { this.__fu = String(u); return __ox.apply(this, arguments); };
+XMLHttpRequest.prototype.send = function () {
+  this.addEventListener('load', () => { try { __fh_grab(this.__fu || '', this.responseText || ''); } catch (e) {} });
+  return __os.apply(this, arguments);
+};
+"""
+
 
 async def check_login_state(page) -> bool | None:
     """三态登录检测: False=明确未登录 / True=明确已登录 / None=不确定(按已登录处理)。"""
@@ -103,6 +132,7 @@ class BrowserService:
                     str(PROFILE_DIR), headless=False,
                     viewport={"width": 1400, "height": 900},
                     args=CHROMIUM_ARGS)
+                await self._context.add_init_script(_CAPTURE_JS)
             pages = [p for p in self._context.pages if not p.is_closed()]
             self._page = pages[0] if pages else await self._context.new_page()
             self._attach_popup_guard(self._page)

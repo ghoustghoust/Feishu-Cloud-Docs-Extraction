@@ -42,9 +42,10 @@ export default function App() {
   return (
     <div className="h-full flex flex-col">
       <Header onSettings={() => setSettingsOpen(true)} />
-      <main className="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_380px] gap-4 p-4 min-h-0">
+      <main className="flex-1 flex flex-col xl:grid xl:grid-cols-[minmax(0,1fr)_380px] gap-4 p-4 min-h-0
+        overflow-auto xl:overflow-hidden">
         {/* 左列: 任务 + 最近页面 + 日志 */}
-        <div className="flex flex-col gap-4 min-h-0 overflow-auto pr-0.5">
+        <div className="flex flex-col gap-4 shrink-0 xl:shrink xl:min-h-0 pr-0.5 xl:overflow-auto">
           <TaskPanel onNeedTree={() => setRefreshKey((k) => k + 1)} />
           <section>
             <h2 className="label mb-2 px-1">最近页面</h2>
@@ -55,7 +56,7 @@ export default function App() {
           </section>
         </div>
         {/* 右列: 知识库树 */}
-        <div className="min-h-[420px] xl:min-h-0">
+        <div className="shrink-0 xl:shrink min-h-[420px] xl:min-h-0">
           <TreePanel rootToken={rootToken} refreshKey={refreshKey}
             roots={roots} onRootChange={setRootToken} />
         </div>

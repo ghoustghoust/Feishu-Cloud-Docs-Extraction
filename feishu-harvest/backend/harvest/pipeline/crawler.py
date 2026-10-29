@@ -18,7 +18,7 @@ from urllib.parse import urlparse
 
 from harvest.config import CrawlConfig
 from harvest.events import bus
-from harvest.legacy import bitable, extract, files
+from harvest.legacy import bitable, extract, files, mdconvert
 from harvest.pipeline import pdf, writers
 from harvest.pipeline.discover import discover_tree, single_page_fallback
 from harvest.store.db import Store
@@ -245,8 +245,12 @@ class Crawler:
                 "cached": s["cached"], "stopped": self._stop.is_set()}
 
     def _bt_capture(self, page, url: str) -> None:
-        """页面任意时刻发出的 bitable records 请求 → 内嵌表格三元组 (滚动触发懒加载也覆盖)。"""
-        m = re.search(r"/space/api/v1/bitable/([^/?#]+)/records", url)
+        """页面任意时刻发出的 bitable 请求 → 内嵌表格三元组。
+
+        records 与 clientvars 都收: 画廊等记录视图懒初始化只发 clientvars 不发 records,
+        仅监听 records 会漏掉整页内嵌视图 (三元组齐备即可 API 直采)。
+        """
+        m = re.search(r"/space/api/v1/bitable/([^/?#]+)/(?:records|clientvars)", url)
         if not m:
             return
         t = re.search(r"[?&]table[Ii][Dd]=([^&]+)", url)
@@ -323,6 +327,7 @@ class Crawler:
                     except Exception:
                         pass
                     await asyncio.sleep(4)
+            bt_appended = False
             if kind != "bitable":
                 origin = f"{urlparse(page_url).scheme}://{urlparse(page_url).netloc}"
                 for base, tid, vid in sorted(self._bt_hits.get(page, set()))[:5]:
@@ -332,15 +337,41 @@ class Crawler:
                     tmd, _ = await bitable.to_markdown(page, u,
                                                        all_views=self.cfg.bitable_all_views)
                     if tmd:
-                        md = f"{md or ''}\n\n---\n\n{tmd}"
-            # 内嵌记录视图(画册等)懒初始化不拉数据: 无表格产出时把 UI 壳替换为诚实占位
+                        # 纯内嵌页的 DOM 正文只剩导航壳 → 表格直接作正文, 不拼接壳文本
+                        if info.get("_embed_only") or not md or len(md) < 30 \
+                                or mdconvert.has_nav_shell(md):
+                            md = tmd
+                        else:
+                            md = f"{md}\n\n---\n\n{tmd}"
+                        bt_appended = True
+            # 内嵌表未产出数据时补诚实占位 (懒初始化 / 无权限两种原因)
             # (检测在提取前完成 — 提取的整页滚动会把虚拟化块卸载, 事后检测会丢)
-            if kind == "doc" and "| ---" not in (md or ""):
-                if info.get("_has_embed") and not self._bt_hits.get(page):
-                    md = ("<!-- 内嵌多维表格视图 (记录视图懒初始化, 未拉取到数据) -->\n\n"
-                          "**本页为内嵌多维表格视图**，飞书仅在用户聚焦时加载其数据，"
-                          "自动抓取未获取到表格内容。\n\n"
-                          "如需查看表格，请打开原页面：上方「来源」。")
+            # 页面有真实正文时占位追加而非替换, 避免丢失文档内容
+            if kind == "doc" and not bt_appended:
+                if info.get("_has_embed"):
+                    perm = info.get("_embed_perm")
+                    if not perm:  # 权限卡渲染可能晚于早检测 → 聚焦块后复测
+                        try:
+                            perm = await page.evaluate("""async () => {
+                                const b = document.querySelector(
+                                    '[data-block-type="bitable"],[data-block-type="base_refer"]');
+                                if (!b) return false;
+                                try { b.scrollIntoView({block: 'center'}); } catch (e) {}
+                                await new Promise(r => setTimeout(r, 1500));
+                                return /没有权限|申请阅读权限|申请权限/.test(b.innerText || '');
+                            }""")
+                        except Exception:
+                            perm = False
+                    if perm:
+                        note = ("<!-- 内嵌多维表格: 无访问权限 -->\n\n"
+                                "**本页内嵌的多维表格无访问权限**，飞书仅返回权限申请卡片，"
+                                "数据无法自动采撷。请联系表格所有者授权，或打开原页面查看。")
+                    else:
+                        note = ("<!-- 内嵌多维表格视图 (记录视图懒初始化, 未拉取到数据) -->\n\n"
+                                "**本页含内嵌多维表格视图**，飞书仅在用户聚焦时加载其数据，"
+                                "自动抓取未获取到表格内容。\n\n"
+                                "如需查看表格，请打开原页面：上方「来源」。")
+                    md = note if not md or len(md) < 30 else f"{md}\n\n---\n\n{note}"
             if _is_browser_error_page(md or ""):
                 self._st["failed"] += 1
                 self.store.mark_failed(token, "browser_error_page")
@@ -449,15 +480,28 @@ class Crawler:
                 return md, {}, "folder"
 
         has_embed_early = False
+        embed_perm = False
+        embed_only = False
         try:
-            has_embed_early = await page.evaluate(
-                "() => !!document.querySelector('[data-block-type=\"bitable\"],[data-block-type=\"base_refer\"]')")
+            has_embed_early, embed_perm, embed_only = await page.evaluate(
+                """() => {
+                    const bs = [...document.querySelectorAll(
+                        '[data-block-type="bitable"],[data-block-type="base_refer"]')];
+                    const ru = document.querySelector('[class*="render-unit"]');
+                    const total = ru ? (ru.innerText || '').length : 0;
+                    const emb = bs.reduce((n, b) => n + (b.innerText || '').length, 0);
+                    return [bs.length > 0,
+                            bs.some(b => /没有权限|申请阅读权限|申请权限/.test(b.innerText || '')),
+                            bs.length > 0 && total - emb < 120];
+                }""")
         except Exception:
             pass
         md, blob = await extract.extract_page(page, w.images,
                                               render_timeout=self.cfg.render_timeout,
                                               video_links=self.cfg.video_as_link)
         info["_has_embed"] = has_embed_early
+        info["_embed_perm"] = embed_perm
+        info["_embed_only"] = embed_only
         # bitable SPA 晚绑定兜底: ?table= 在路由判定后才附加到地址栏
         # (obj_type=8 页的空间 ID 探测失败场景) — DOM 过短时按活页 URL 重试直采
         if len(md or "") < 400 and "?table=" in (page.url or ""):
@@ -486,7 +530,8 @@ class Crawler:
         s = self._st
         elapsed = max(time.time() - s["t0"], 1)
         rate = s["done"] / (elapsed / 60)
-        pending = s["total"] - s["done"] - s["failed"] - s["skipped"]
+        # 缓存跳过的节点秒级过完, 计入 pending 会让增量续爬的 ETA 虚高数小时
+        pending = max(s["total"] - s["done"] - s["failed"] - s["skipped"] - s["cached"], 0)
         eta = round(pending / rate * 60) if rate > 0.01 else None
         bus.publish({"type": "stats", "done": s["done"], "failed": s["failed"],
                      "skipped": s["skipped"], "chars": s["chars"],

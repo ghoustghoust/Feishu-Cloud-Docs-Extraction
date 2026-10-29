@@ -77,7 +77,8 @@ export function TaskPanel({ onNeedTree }: { onNeedTree: () => void }) {
           )}
         </div>
       </div>
-      {stats && <StatsGrid stats={stats} total={run.total ?? stats.total} />}
+      {stats && <StatsGrid stats={stats} total={run.total ?? stats.total}
+        finished={run.state === "done"} />}
     </div>
   );
 }
@@ -85,8 +86,11 @@ export function TaskPanel({ onNeedTree }: { onNeedTree: () => void }) {
 function progressOf(run: RunState, stats: Stats | null): number {
   if (run.state === "done") return 1;
   if (!stats || !stats.total) return 0;
-  const fin = stats.done + stats.failed + stats.skipped;
-  return fin / Math.max(stats.total, 1);
+  return processedOf(stats) / Math.max(stats.total, 1);
+}
+
+function processedOf(stats: Stats): number {
+  return stats.done + stats.failed + stats.skipped + (stats.cached ?? 0);
 }
 
 const PHASES = ["prepare", "discover", "extract", "export"] as const;
@@ -116,17 +120,17 @@ function PhaseFlow({ run }: { run: RunState }) {
   );
 }
 
-function StatsGrid({ stats, total }: { stats: Stats; total: number }) {
-  const fin = stats.done + stats.failed + stats.skipped;
+function StatsGrid({ stats, total, finished }: { stats: Stats; total: number; finished: boolean }) {
+  const fin = processedOf(stats);
   return (
     <div className="grid grid-cols-3 md:grid-cols-6 gap-2.5">
       <Stat label="已完成" value={stats.done} sub={`共 ${total || stats.total} 节点`} accent />
       <Stat label="缓存跳过" value={stats.cached ?? 0} sub="增量同步" />
       <Stat label="失败" value={stats.failed} sub={stats.skipped ? `跳过 ${stats.skipped}` : undefined} />
       <Stat label="字符量" value={fmtNum(stats.chars)} />
-      <Stat label="速率" value={stats.rate_per_min ? `${stats.rate_per_min.toFixed(1)}/min` : "—"} />
+      <Stat label="速率" value={!finished && stats.rate_per_min ? `${stats.rate_per_min.toFixed(1)}/min` : "—"} />
       <Stat label="预计剩余"
-        value={stats.eta_sec != null ? fmtEta(stats.eta_sec) : "—"}
+        value={!finished && stats.eta_sec != null ? fmtEta(stats.eta_sec) : "—"}
         sub={`${fin}/${stats.total || "?"} 已处理`} />
     </div>
   );
