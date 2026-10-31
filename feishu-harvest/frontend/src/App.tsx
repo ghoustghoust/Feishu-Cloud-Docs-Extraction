@@ -20,6 +20,7 @@ export default function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const runUrl = useFeed((s) => s.run.url);
   const runState = useFeed((s) => s.run.state);
+  const runPhase = useFeed((s) => s.run.phase);
 
   // 服务重启后 run 状态丢失 → 启动时从库中恢复知识库根 (修复树面板空白)
   useEffect(() => {
@@ -38,6 +39,10 @@ export default function App() {
   useEffect(() => {
     if (runState === "done" || runState === "error") setRefreshKey((k) => k + 1);
   }, [runState]);
+  // 发现阶段完成即刷新树 (此前只在任务结束时刷, 爬取过程中树一直是空的)
+  useEffect(() => {
+    if (runPhase === "discover_done") setRefreshKey((k) => k + 1);
+  }, [runPhase]);
 
   return (
     <div className="h-full flex flex-col">

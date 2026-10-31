@@ -38,6 +38,7 @@ class Crawler:
         self._task: asyncio.Task | None = None
         self.last_result: dict = {}
         self._bt_hits: dict = {}  # page → {(base, tableId, viewId)} 网络层内嵌表格捕获
+        self._retry_tokens: set = set()  # 崩溃失败节点: 本轮 worker 结束后立即原地重试
 
     # ---------- 生命周期 ----------
     def start(self, url: str, tokens: list[str] | None = None, fresh: bool = False) -> None:
@@ -240,6 +241,39 @@ class Crawler:
         workers = [asyncio.create_task(worker()) for _ in range(self.cfg.tabs)]
         # 主页面也是 worker 的一员 (PagePool 第一个 acquire 复用主页面)
         await asyncio.gather(*workers)
+
+        # 自动重试一轮: 崩溃失败的节点立即用新页重爬 (多数是浏览器整体崩溃的连带伤害)
+        await self.pool.close_all()  # 释放首轮占用的池许可 (worker 不显式归还)
+        if self._retry_tokens and not self._stop.is_set():
+            retry_set = set(self._retry_tokens)
+            self._retry_tokens.clear()
+            retry_pages = [p for p in pages if p["token"] in retry_set]
+            if retry_pages:
+                bus.publish({"type": "run", "state": "running", "phase": "extract",
+                             "retry": len(retry_pages)})
+                try:
+                    await service.ensure_context()  # 浏览器可能整体挂了 → 重拉
+                except Exception:
+                    pass
+                rqueue: asyncio.Queue = asyncio.Queue()
+                for p in retry_pages:
+                    rqueue.put_nowait(p)
+                rtodo = len(retry_pages)
+
+                async def rworker():
+                    page = await self.pool.acquire()
+                    if not getattr(page, "_bt_hooked", False):
+                        page.on("request", lambda req: self._bt_capture(page, req.url))
+                        page._bt_hooked = True
+                    while not self._stop.is_set():
+                        try:
+                            p = rqueue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            return
+                        page = await self._extract_one(page, p, w, rqueue.qsize() + 1, rtodo)
+
+                await asyncio.gather(*[asyncio.create_task(rworker()) for _ in range(self.cfg.tabs)])
+
         await self.pool.close_all()
         s = self._st
         return {"pages_saved": s["done"], "failed": s["failed"], "skipped": s["skipped"],
@@ -429,6 +463,7 @@ class Crawler:
         except Exception as e:
             if _is_target_closed(e):
                 page = await self.pool.replace(page)
+                self._retry_tokens.add(token)
             self._st["failed"] += 1
             self.store.mark_failed(token, f"{type(e).__name__}: {e}")
             bus.publish({"type": "page", "token": token, "title": title,

@@ -119,7 +119,7 @@ class BrowserService:
         page.on("popup", on_popup)
 
     async def ensure_context(self):
-        """惰性启动浏览器; 已启动且主页面存活则复用 (主页面被换/关闭后自动取回活页)。"""
+        """惰性启动浏览器; 已启动且主页面存活则复用; 浏览器整体死亡时自动重拉。"""
         async with self._lock:
             if (self._context and self._page and not self._page.is_closed()):
                 return self._context
@@ -127,13 +127,25 @@ class BrowserService:
                 from playwright.async_api import async_playwright
                 self._pw = await async_playwright().start()
             PROFILE_DIR.mkdir(parents=True, exist_ok=True)
-            if not self._context:
+            pages = []
+            if self._context:
+                try:
+                    pages = [p for p in self._context.pages if not p.is_closed()]
+                except Exception:
+                    pages = []
+            if not self._context or not pages:
+                # 浏览器整体死亡 (崩溃/被关) → 重新拉起 (持久化登录态不受影响)
+                try:
+                    if self._context:
+                        await self._context.close()
+                except Exception:
+                    pass
                 self._context = await self._pw.chromium.launch_persistent_context(
                     str(PROFILE_DIR), headless=False,
                     viewport={"width": 1400, "height": 900},
                     args=CHROMIUM_ARGS)
                 await self._context.add_init_script(_CAPTURE_JS)
-            pages = [p for p in self._context.pages if not p.is_closed()]
+                pages = self._context.pages
             self._page = pages[0] if pages else await self._context.new_page()
             self._attach_popup_guard(self._page)
             return self._context
@@ -202,8 +214,13 @@ class PagePool:
         self._sem.release()
 
     async def replace(self, dead) -> object:
-        """Tab 崩溃 (TargetClosedError) 后换新页; 若死页是主页面则同步 service 引用。"""
+        """Tab 崩溃 (TargetClosedError) 后换新页; 若死页是主页面则同步 service 引用;
+        整个浏览器死亡 (context 关闭) 时先重新拉起。"""
         try:
+            ctx = self._svc.context
+            if ctx is None or dead is self._svc.page and self._svc.page.is_closed() or dead.is_closed():
+                if ctx is None or not ctx.pages or all(p.is_closed() for p in ctx.pages):
+                    await self._svc.ensure_context()  # 浏览器整体重拉 (持久化登录态不受影响)
             if dead in self._all:
                 self._all[self._all.index(dead)] = None
             try:
