@@ -17,6 +17,27 @@ if errorlevel 1 (
   python -m playwright install chromium
 )
 
+rem 前端构建产物不入库: clone 后首次运行自动构建 (需要 Node.js 16+)
+if not exist "frontend\dist\index.html" (
+  where node >nul 2>nul
+  if errorlevel 1 (
+    echo [!] 未找到 Node.js, 无法构建前端界面。
+    echo     请安装 Node.js 16+ 后重新运行, 后端仍将以纯 API 模式启动。
+    echo     API 地址: http://127.0.0.1:19527/docs
+  ) else (
+    if not exist "frontend\node_modules" (
+      echo [i] 首次运行, 正在安装前端依赖 (约 1-2 分钟)...
+      pushd frontend
+      call npm install --no-audit --no-fund
+      popd
+    )
+    echo [i] 正在构建前端界面...
+    pushd frontend
+    call npm run build
+    popd
+  )
+)
+
 echo [i] 打开控制台 http://127.0.0.1:19527 ...
 start "" http://127.0.0.1:19527
 
